@@ -12,7 +12,8 @@ router = APIRouter(prefix="/support", tags=["Customer Support Agent"])
 async def handle_support_message(request: SupportRequest):
     """
     Submits a customer support message into the LangGraph workflow:
-    - Runs tools before approval decision
+    - Input guardrails screen the prompt first before tools or data access.
+    - If the request violates safety guidelines, halts early and returns status 'rejected'.
     - If the request requires human authorization, pauses execution and returns status 'waiting_for_approval'.
     - If safe or informational, completes automatically and returns the final response.
     """
@@ -32,7 +33,22 @@ async def handle_support_message(request: SupportRequest):
         current_state = support_graph.get_state(config)
         values = current_state.values or {}
         
-        # If there are pending tasks with interrupts, graph is paused waiting for human approval!
+        # Check if rejected by input guardrail
+        if not values.get("isSafe", True):
+            logger.warning(f"==> [POST /api/support] Thread '{thread_id}' rejected early by input guardrail.")
+            return SupportResponse(
+                threadId=thread_id,
+                status="rejected",
+                response=values.get("finalResponse"),
+                message="Request rejected by safety guardrail.",
+                intent=values.get("intent"),
+                orderId=values.get("orderId"),
+                requiresApproval=False,
+                approvalStatus="not_required",
+                guardrailResult=values.get("guardrailResult")
+            )
+        
+        # If there are pending tasks with interrupts, graph is paused waiting for human approval
         if current_state.next:
             logger.info(f"==> [POST /api/support] Thread '{thread_id}' paused at interrupt (Next nodes: {current_state.next})")
             
@@ -50,7 +66,8 @@ async def handle_support_message(request: SupportRequest):
                 intent=values.get("intent"),
                 orderId=values.get("orderId"),
                 requiresApproval=True,
-                approvalStatus="pending"
+                approvalStatus="pending",
+                guardrailResult=values.get("guardrailResult")
             )
             
         # Graph finished without pausing (No approval needed)
@@ -63,7 +80,7 @@ async def handle_support_message(request: SupportRequest):
             orderId=values.get("orderId"),
             requiresApproval=False,
             approvalStatus=values.get("approvalStatus", "not_required"),
-            guardianResult=values.get("guardianResult"),
+            guardrailResult=values.get("guardrailResult"),
             actionResult=values.get("actionResult")
         )
         
@@ -95,7 +112,7 @@ async def get_support_status(thread_id: str):
         orderId=values.get("orderId"),
         requiresApproval=values.get("requiresApproval"),
         approvalStatus=values.get("approvalStatus"),
-        guardianResult=values.get("guardianResult"),
+        guardrailResult=values.get("guardrailResult"),
         actionResult=values.get("actionResult")
     )
 
@@ -103,8 +120,8 @@ async def get_support_status(thread_id: str):
 async def submit_human_approval(thread_id: str, request: ApprovalRequest):
     """
     Resumes a paused support thread by submitting a human approval decision:
-    - approved: true -> Executes the sensitive action (executeRefund) -> Generates response -> JEV Guardian -> Returns response.
-    - approved: false -> Skips action -> Generates courteous rejection response -> JEV Guardian -> Returns response.
+    - approved: true -> Executes the sensitive action (executeRefund) -> Generates response -> Returns response.
+    - approved: false -> Skips action -> Generates courteous rejection response -> Returns response.
     """
     config = {"configurable": {"thread_id": thread_id}}
     current_state = support_graph.get_state(config)
@@ -142,7 +159,7 @@ async def submit_human_approval(thread_id: str, request: ApprovalRequest):
             orderId=values.get("orderId"),
             requiresApproval=True,
             approvalStatus="approved" if request.approved else "rejected",
-            guardianResult=values.get("guardianResult"),
+            guardrailResult=values.get("guardrailResult"),
             actionResult=values.get("actionResult")
         )
         

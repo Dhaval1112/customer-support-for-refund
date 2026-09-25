@@ -13,7 +13,7 @@ logger = logging.getLogger("support_app")
 
 app = FastAPI(
     title="Customer Support Action Agent API",
-    description="LangGraph Human-in-the-Loop (HITL) agent with Tools-Before-Approval and JEV Guardian Evaluator.",
+    description="LangGraph Human-in-the-Loop (HITL) agent with Input Guardrails and Tools-Before-Approval.",
     version="1.0.0"
 )
 
@@ -32,7 +32,7 @@ app.include_router(support_router, prefix="/api")
 async def root():
     return {
         "status": "ok",
-        "service": "Customer Support Action Agent (LangGraph + HITL + JEV Guardian)",
+        "service": "Customer Support Action Agent (LangGraph + HITL + Input Guardrails)",
         "endpoints": [
             "POST /api/support - Start support request",
             "GET /api/support/{threadId} - Get thread state",

@@ -12,33 +12,87 @@ from agents.support.tools import (
     execute_refund_tool
 )
 from agents.support.prompts import CLASSIFY_PROMPT, RESPONSE_PROMPT
-from agents.support.guardian import evaluate_with_guardian
 
 logger = logging.getLogger("support_nodes")
 
+# Common prompt injection and malicious heuristic patterns for defense-in-depth
+PROMPT_INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|above|prior)\s+instructions",
+    r"system\s+prompt",
+    r"drop\s+table",
+    r"reveal\s+.*(secret|key|api|password|token)",
+    r"act\s+as\s+dan",
+    r"jailbreak",
+    r"<script.*?>",
+    r"delete\s+from\s+",
+]
+
+def check_heuristic_guardrails(text: str) -> tuple[bool, str | None]:
+    """Fast regex-based heuristic guardrail check."""
+    for pattern in PROMPT_INJECTION_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return False, f"Prompt injection pattern detected: '{pattern}'"
+    return True, None
+
 def classify_request(state: SupportState) -> dict:
     """
-    Node 1: Understands the customer's request.
-    Extracts the user's intent and any mentioned Order ID.
+    Node 1: Input Guardrail & Intent Classification.
+    Screen the incoming customer message for prompt injections and malicious content.
+    If unsafe, sets isSafe=False and finalResponse so workflow safely halts early.
+    If safe, extracts customer intent and order ID.
     """
     user_msg = state.get("userMessage", "")
     logger.info(f"[NODE: classify_request] Incoming message: '{user_msg}'")
     
-    # Check regex for fast and accurate order ID extraction (ORD-XXXX)
+    # 1. Fast heuristic guardrail check
+    is_heuristic_safe, heuristic_reason = check_heuristic_guardrails(user_msg)
+    if not is_heuristic_safe:
+        logger.warning(f"[NODE: classify_request] Input guardrail triggered by heuristic: {heuristic_reason}")
+        return {
+            "isSafe": False,
+            "guardrailResult": {
+                "safe": False,
+                "reason": heuristic_reason
+            },
+            "status": "rejected",
+            "finalResponse": "I am sorry, but I cannot process this request as it violates our customer support policy. If you have an inquiry regarding an order, shipment, or refund, please let me know!",
+            "intent": "general_inquiry",
+            "orderId": None
+        }
+
+    # Extract order ID with regex (ORD-XXXX)
     order_id_match = re.search(r"\b(ORD-\d+)\b", user_msg, re.IGNORECASE)
     regex_order_id = order_id_match.group(1).upper() if order_id_match else None
     
+    # 2. LLM-based Input Guardrail & Classification
     model = get_model(temperature=0.0)
     structured_llm = model.with_structured_output(ClassifyOutput)
     chain = CLASSIFY_PROMPT | structured_llm
     
     try:
         res: ClassifyOutput = chain.invoke({"userMessage": user_msg})
+        
+        if not res.isSafe:
+            reason = res.safetyReason or "Input rejected by safety guardrail."
+            logger.warning(f"[NODE: classify_request] Input guardrail triggered by LLM: {reason}")
+            return {
+                "isSafe": False,
+                "guardrailResult": {
+                    "safe": False,
+                    "reason": reason
+                },
+                "status": "rejected",
+                "finalResponse": "I am sorry, but I cannot process this request as it does not comply with our customer support policy. If you have an inquiry regarding an order, shipment, or refund, please let me know!",
+                "intent": "general_inquiry",
+                "orderId": None
+            }
+            
         intent = res.intent
         order_id = regex_order_id or res.orderId
+        
     except Exception as e:
         logger.warning(f"[NODE: classify_request] Structured output fallback: {e}")
-        # Rule-based fallback
+        # Rule-based fallback for intent
         msg_lower = user_msg.lower()
         if "refund" in msg_lower or "return" in msg_lower or "money back" in msg_lower:
             intent = "refund"
@@ -48,8 +102,13 @@ def classify_request(state: SupportState) -> dict:
             intent = "general_inquiry"
         order_id = regex_order_id
         
-    logger.info(f"[NODE: classify_request] Result: intent='{intent}', orderId='{order_id}'")
+    logger.info(f"[NODE: classify_request] Passed guardrail: intent='{intent}', orderId='{order_id}'")
     return {
+        "isSafe": True,
+        "guardrailResult": {
+            "safe": True,
+            "reason": "Passed input safety checks."
+        },
         "intent": intent,
         "orderId": order_id,
         "status": "in_progress"
@@ -57,7 +116,7 @@ def classify_request(state: SupportState) -> dict:
 
 def call_tools(state: SupportState) -> dict:
     """
-    Node 2: CRITICAL STEP — Tools BEFORE Approval Decision.
+    Node 2: Tools BEFORE Approval Decision.
     Calls business APIs to fetch real order data and evaluate refund eligibility.
     """
     intent = state.get("intent")
@@ -155,7 +214,6 @@ def human_approval(state: SupportState) -> dict:
     
     logger.info(f"[NODE: human_approval] Triggering LangGraph interrupt for order {order_id}...")
     
-    # This interrupt pauses execution and sends payload to the caller
     human_decision = interrupt({
         "orderId": order_id,
         "action": "refund",
@@ -165,7 +223,6 @@ def human_approval(state: SupportState) -> dict:
         "message": f"Refund of {eligibility.get('currency', 'INR')} {eligibility.get('amount')} for {order_id} requires supervisor authorization."
     })
     
-    # When resumed via Command(resume={"approved": True/False}), human_decision contains the value
     is_approved = False
     if isinstance(human_decision, dict):
         is_approved = human_decision.get("approved", False)
@@ -205,12 +262,6 @@ def generate_response(state: SupportState) -> dict:
     approval_status = state.get("approvalStatus") or "not_required"
     action_result = json.dumps(state.get("actionResult") or {}, indent=2)
     
-    # Guardian feedback for regeneration
-    guardian_feedback = ""
-    guardian_result = state.get("guardianResult")
-    if guardian_result and not guardian_result.get("approved"):
-        guardian_feedback = f"\nPREVIOUS DRAFT REJECTED BY GUARDIAN REASON: {guardian_result.get('reason')}\nCORRECT THIS IN THE NEW DRAFT."
-        
     logger.info(f"[NODE: generate_response] Drafting response for intent='{intent}', approvalStatus='{approval_status}'...")
     
     model = get_model(temperature=0.3)
@@ -222,46 +273,14 @@ def generate_response(state: SupportState) -> dict:
         "orderId": order_id or "Not provided",
         "toolResult": tool_result,
         "approvalStatus": approval_status,
-        "actionResult": action_result,
-        "guardianFeedback": guardian_feedback
+        "actionResult": action_result
     })
     
-    logger.info(f"[NODE: generate_response] Draft response generated ({len(response.content)} chars).")
-    return {"draftResponse": response.content}
-
-def guardian_node(state: SupportState) -> dict:
-    """
-    Node 7: JEV Guardian LLM Node.
-    Evaluates whether the generated response is factually grounded and accurate.
-    """
-    user_msg = state.get("userMessage", "")
-    tool_result = state.get("toolResult") or {}
-    action_result = state.get("actionResult") or {}
-    approval_status = state.get("approvalStatus") or "not_required"
-    draft_response = state.get("draftResponse", "")
-    
-    attempts = (state.get("guardianAttempts") or 0) + 1
-    logger.info(f"[NODE: guardian_node] JEV Guardian evaluation attempt {attempts}/2...")
-    
-    evaluation = evaluate_with_guardian(
-        user_message=user_msg,
-        tool_result=tool_result,
-        action_result=action_result,
-        approval_status=approval_status,
-        draft_response=draft_response
-    )
-    
-    is_passed = evaluation.approved or (attempts >= 2)
-    final_status = "completed" if (is_passed and approval_status != "rejected") else ("rejected" if approval_status == "rejected" else "in_progress")
+    final_status = "completed" if approval_status != "rejected" else "rejected"
+    logger.info(f"[NODE: generate_response] Response generated ({len(response.content)} chars). Status: {final_status}")
     
     return {
-        "guardianResult": {
-            "approved": evaluation.approved,
-            "isCorrect": evaluation.isCorrect,
-            "isGrounded": evaluation.isGrounded,
-            "reason": evaluation.reason
-        },
-        "guardianAttempts": attempts,
-        "finalResponse": draft_response if is_passed else None,
+        "draftResponse": response.content,
+        "finalResponse": response.content,
         "status": final_status
     }
