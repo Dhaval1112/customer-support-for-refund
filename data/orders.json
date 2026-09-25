@@ -1,0 +1,68 @@
+{
+  "ORD-1001": {
+    "orderId": "ORD-1001",
+    "customerId": "CUS-10",
+    "customerName": "John Carter",
+    "amount": 4999,
+    "currency": "INR",
+    "status": "delivered",
+    "deliveredDaysAgo": 5,
+    "items": [
+      "Wireless Noise-Canceling Headphones"
+    ],
+    "paymentMethod": "Credit Card",
+    "refundStatus": "refunded",
+    "shippingAddress": "123 Tech Park, Bengaluru, KA",
+    "refundId": "REF-AB7E31A9",
+    "refundedAmount": 4999,
+    "refundedTimestamp": "2026-09-25 00:20:04"
+  },
+  "ORD-1002": {
+    "orderId": "ORD-1002",
+    "customerId": "CUS-22",
+    "customerName": "Sarah Miller",
+    "amount": 1200,
+    "currency": "INR",
+    "status": "delivered",
+    "deliveredDaysAgo": 45,
+    "items": [
+      "Cotton T-Shirt 3-Pack"
+    ],
+    "paymentMethod": "UPI",
+    "refundStatus": "none",
+    "shippingAddress": "45 Green Valley, Pune, MH"
+  },
+  "ORD-1003": {
+    "orderId": "ORD-1003",
+    "customerId": "CUS-35",
+    "customerName": "Robert Wilson",
+    "amount": 8500,
+    "currency": "INR",
+    "status": "shipped",
+    "deliveredDaysAgo": null,
+    "carrier": "BlueDart",
+    "trackingNumber": "BD987654321IN",
+    "estimatedDelivery": "Tomorrow, by 6:00 PM",
+    "items": [
+      "Mechanical Gaming Keyboard (RGB)"
+    ],
+    "paymentMethod": "Net Banking",
+    "refundStatus": "not_applicable",
+    "shippingAddress": "78 Marina Bay, Mumbai, MH"
+  },
+  "ORD-1004": {
+    "orderId": "ORD-1004",
+    "customerId": "CUS-48",
+    "customerName": "Emma Davis",
+    "amount": 15999,
+    "currency": "INR",
+    "status": "delivered",
+    "deliveredDaysAgo": 12,
+    "items": [
+      "Smart Fitness Watch Pro"
+    ],
+    "paymentMethod": "Credit Card",
+    "refundStatus": "none",
+    "shippingAddress": "90 Sunrise Avenue, Hyderabad, TS"
+  }
+}
